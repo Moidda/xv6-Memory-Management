@@ -46,6 +46,8 @@ trap(struct trapframe *tf)
     return;
   }
 
+  struct proc* curproc;
+
   switch(tf->trapno){
   case T_IRQ0 + IRQ_TIMER:
     if(cpuid() == 0){
@@ -77,6 +79,33 @@ trap(struct trapframe *tf)
             cpuid(), tf->cs, tf->eip);
     lapiceoi();
     break;
+
+
+  // added
+  case T_PGFLT:
+    cprintf("-----------------In Page fault-----------------\n");
+    curproc = myproc();
+    int i;
+    uint va = rcr2();
+    pde_t *pde = &(myproc()->pgdir[PDX(va)]);
+    if(((int)(*pde) & PTE_P)!=0){
+      if(((uint*)PTE_ADDR(P2V(*pde)))[PTX(va)] & PTE_PG){
+        
+        cprintf("\tPage Fault for rcr2=%d\n", va);
+        cprintf("\tswapPageIn(%d)\n", PTE_ADDR(va));
+        printva(curproc);
+
+        swapPageIn(curproc, PTE_ADDR(va));
+        
+        printva(curproc);
+
+
+        cprintf("-----------------End Page fault-----------------\n");
+        return;
+      }
+    }
+    // end
+
 
   //PAGEBREAK: 13
   default:

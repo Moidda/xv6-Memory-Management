@@ -38,6 +38,12 @@ exec(char *path, char **argv)
   if((pgdir = setupkvm()) == 0)
     goto bad;
 
+  // added
+  // clear # of pages in memory before loading the program into memory
+  // during loading the program into memory, allocuvm will assign new pages into curproc
+  int prevnMemPages = curproc->nMemPages;
+  curproc->nMemPages = 0;
+
   // Load program into memory.
   sz = 0;
   for(i=0, off=elf.phoff; i<elf.phnum; i++, off+=sizeof(ph)){
@@ -99,6 +105,7 @@ exec(char *path, char **argv)
   curproc->sz = sz;
   curproc->tf->eip = elf.entry;  // main
   curproc->tf->esp = sp;
+
   switchuvm(curproc);
   freevm(oldpgdir);
   return 0;
@@ -110,5 +117,9 @@ exec(char *path, char **argv)
     iunlockput(ip);
     end_op();
   }
+
+  // added
+  curproc->nMemPages = prevnMemPages;
+
   return -1;
 }

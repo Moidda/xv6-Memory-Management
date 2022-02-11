@@ -7,8 +7,50 @@
 #include "proc.h"
 #include "elf.h"
 
+// added
+#define FIFO      0
+#define AGING     1
+#define BUFSIZE   (PGSIZE/4)
+
+
 extern char data[];  // defined by kernel.ld
 pde_t *kpgdir;  // for use in scheduler()
+
+// added
+void printva(struct proc* curproc) {
+  int i;
+  cprintf("Pages in file:\n");
+  for(i = 0; i < curproc->nMemPages; i++) 
+    cprintf("\tva[%d] = %d\tva_swap[%d] = %d\n", i, (uint) curproc->va[i], i, (uint) curproc->va_swap[i]);
+}
+
+// added
+int getFifo(struct proc* curproc) {
+  int i;
+  if(curproc->nMemPages == 0) 
+    panic("getFifo error: No pages in memory to swap out\n");
+  return 0;
+}
+
+// added
+char* getAging(struct proc* curproc) {
+  return 0;
+}
+
+// added
+int getPage(struct proc *curproc, int page_replacement_algo) {
+  if(page_replacement_algo == FIFO) return getFifo(curproc);
+  if(page_replacement_algo == AGING) return getAging(curproc);
+  return 0;
+}
+
+// added
+void shiftLeft(struct proc *curproc, int idx) {
+  int i;
+  for(i = idx; i+1<MAX_PSYC_PAGES; i++) 
+    curproc->va[i] = curproc->va[i+1];
+}
+
 
 // Set up CPU's kernel segment descriptors.
 // Run once on entry on each CPU.
@@ -221,6 +263,8 @@ loaduvm(pde_t *pgdir, char *addr, struct inode *ip, uint offset, uint sz)
 int
 allocuvm(pde_t *pgdir, uint oldsz, uint newsz)
 {
+  // cprintf("------------- Inside allocuvm -------------\n");
+
   char *mem;
   uint a;
 
@@ -231,7 +275,54 @@ allocuvm(pde_t *pgdir, uint oldsz, uint newsz)
 
   a = PGROUNDUP(oldsz);
   for(; a < newsz; a += PGSIZE){
-    mem = kalloc();
+    mem = kalloc();                                  // get a virtual address space
+    struct proc *curproc = myproc();
+    int page_no = curproc->nMemPages + curproc->nFilePages + 1;
+
+    cprintf("\tAssigning page no: %d, va = %d\n", page_no, a);
+
+    if(page_no <= MAX_PSYC_PAGES) {
+      curproc->nMemPages = page_no; 
+      curproc->va[page_no-1] = (char*)a;
+      cprintf("\tcurproc->va[%d] = %d\n", page_no-1, curproc->va[page_no-1]);
+    }
+    else {
+      pte_t* pte;
+      int file_offset = curproc->nFilePages*PGSIZE;
+      int va_idx = getPage(curproc, FIFO);
+      char* va_0 = curproc->va[va_idx];
+      shiftLeft(curproc, va_idx);
+
+      cprintf("\tAlgo chose to swap out va[%d] = %d\n", va_idx, va_0);
+
+      if( (pte = walkpgdir(pgdir, (void*)va_0, 0)) == 0)
+        panic("Swap Error: No pte found against va returned by algo");
+
+      uint pa = PTE_ADDR(*pte);
+      char *v = P2V(pa);
+      if(pa == 0) 
+        panic("Swap Error: No physical address found by va returned by algo");
+
+      if(writeToSwapFile(curproc, v, file_offset, PGSIZE) == -1) {
+        cprintf("Panic follows: In process pid:%d, name:%s\n", curproc->pid, curproc->name);
+        panic("Error writing to swap file");
+      }
+      cprintf("\tWritten to swap file\n");
+
+      kfree(v);
+      *pte = (PTE_W | PTE_U | PTE_PG);
+
+      lcr3(V2P(curproc->pgdir));
+
+      // populate metadata
+      curproc->va_swap[curproc->nFilePages] = (char*)va_0;  // va_0 is now stored in swap 
+      curproc->nFilePages++;                                // increment #total pages
+      curproc->va[MAX_PSYC_PAGES-1] = (char*)a;             // assign new va to newly created empty space
+    
+      printva(curproc);
+    }
+    // end
+
     if(mem == 0){
       cprintf("allocuvm out of memory\n");
       deallocuvm(pgdir, newsz, oldsz);
@@ -245,6 +336,7 @@ allocuvm(pde_t *pgdir, uint oldsz, uint newsz)
       return 0;
     }
   }
+  // cprintf("------------- End allocuvm -------------\n");
   return newsz;
 }
 
@@ -273,6 +365,10 @@ deallocuvm(pde_t *pgdir, uint oldsz, uint newsz)
       char *v = P2V(pa);
       kfree(v);
       *pte = 0;
+      
+      // added
+      if(myproc()->pgdir == pgdir)
+        myproc()->nMemPages--;
     }
   }
   return newsz;
@@ -384,6 +480,71 @@ copyout(pde_t *pgdir, uint va, void *p, uint len)
   }
   return 0;
 }
+
+
+// added
+pte_t* getWalkpgdir(pde_t *pgdir, const void *va) {
+  return walkpgdir(pgdir, va, 0);
+}
+
+// added
+void swapPageIn(struct proc* curproc, char* va) {
+  cprintf("------------ In Swap Page ------------\n");
+
+  int i = 0, va1_i, va2_i;
+  pte_t *pte_1, *pte_2;
+  char buf[BUFSIZE];
+  
+  for(va2_i = 0; va2_i < curproc->nFilePages; va2_i++) 
+    if(curproc->va_swap[va2_i] == va)
+      break;
+
+  if(va2_i == curproc->nFilePages) 
+    panic("SwapPageIn: va not found\n");
+
+  int location_in_file = va2_i*PGSIZE;
+  int offset = 0;
+  va1_i = getPage(curproc, FIFO);
+  char* va_0 = curproc->va[va1_i];
+
+  char *mem = kalloc();
+  if(mem == 0) 
+    panic("SwapPageIn:allocuvm out of memory\n");
+
+  memset(mem, 0, PGSIZE);
+  if(mappages(curproc->pgdir, va, PGSIZE, V2P(mem), PTE_W|PTE_U) < 0) {
+    cprintf("SwapPageIn:allocuvm out of memory for mapapges\n");
+    kfree(mem);
+  }
+
+  if( (pte_1 = walkpgdir(curproc->pgdir, (void*)va_0, 0)) == 0) 
+    panic("Swap Page IN Error: No pte found against va returned by algo\n");
+
+  if( (pte_2 = walkpgdir(curproc->pgdir, (void*)va, 0)) == 0) 
+    panic("Swap Page IN Error: No pte found against page fault address\n");
+
+  uint pa1 = PTE_ADDR(*pte_1);
+  uint pa2 = PTE_ADDR(*pte_2);
+
+  readFromSwapFile(curproc, (char*)P2V(pa2), va2_i*PGSIZE, PGSIZE);
+  writeToSwapFile(curproc, (char*)P2V(pa1), va2_i*PGSIZE, PGSIZE);
+
+  kfree((char*)P2V(pa1));
+  *pte_1 = (PTE_W | PTE_U | PTE_PG);    // pte_1 has been paged out
+  *pte_2 &= (~PTE_PG);                   
+  
+  lcr3(V2P(curproc->pgdir));
+
+  shiftLeft(curproc, va1_i);                // move all elements of curproc->va to 1 step left
+  curproc->va_swap[va2_i] = (char*) va_0;   // va_0 is now stored in swap file, substituting va
+  curproc->va[MAX_PSYC_PAGES-1] = va;       // va is now stored at the tail of list
+  curproc->pageFault++;
+
+  cprintf("------------ End Swap Page ------------\n");
+}
+
+
+
 
 //PAGEBREAK!
 // Blank page.

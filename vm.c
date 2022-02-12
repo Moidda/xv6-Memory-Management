@@ -33,8 +33,21 @@ int getFifo(struct proc* curproc) {
 }
 
 // added
-char* getAging(struct proc* curproc) {
-  return 0;
+int getAging(struct proc* curproc) {
+  int i, ret = 0;
+  if(curproc->nMemPages == 0) 
+    panic("getAging error: No pages in memory to swap out\n");
+  
+  uint max_age = 0;
+  for(i = 0; i < curproc->nMemPages; i++) {
+    cprintf("age_ram[%d] = %d\n", i, curproc->age_ram[i]);
+    if(curproc->age_ram[i] > max_age) {
+      max_age = curproc->age_ram[i];
+      ret = i;
+    }
+  }
+  cprintf("max_age = %d\n", max_age);
+  return ret;
 }
 
 // added
@@ -47,8 +60,11 @@ int getPage(struct proc *curproc, int page_replacement_algo) {
 // added
 void shiftLeft(struct proc *curproc, int idx) {
   int i;
-  for(i = idx; i+1<MAX_PSYC_PAGES; i++) 
+  for(i = idx; i+1<MAX_PSYC_PAGES; i++) {
     curproc->va[i] = curproc->va[i+1];
+    curproc->age_ram[i] = curproc->age_ram[i+1];
+    curproc->age_swap[i] = curproc->age_swap[i+1];
+  }
 }
 
 
@@ -291,6 +307,7 @@ allocuvm(pde_t *pgdir, uint oldsz, uint newsz)
       int file_offset = curproc->nFilePages*PGSIZE;
       int va_idx = getPage(curproc, FIFO);
       char* va_0 = curproc->va[va_idx];
+      uint va_age = curproc->age_ram[va_idx];
       shiftLeft(curproc, va_idx);
 
       cprintf("\tAlgo chose to swap out va[%d] = %d\n", va_idx, va_0);
@@ -316,9 +333,11 @@ allocuvm(pde_t *pgdir, uint oldsz, uint newsz)
 
       // populate metadata
       curproc->va_swap[curproc->nFilePages] = (char*)va_0;  // va_0 is now stored in swap 
+      curproc->age_swap[curproc->nFilePages] = va_age;
       curproc->nFilePages++;                                // increment #total pages
       curproc->va[MAX_PSYC_PAGES-1] = (char*)a;             // assign new va to newly created empty space
-    
+      curproc->age_ram[MAX_PSYC_PAGES-1] = 0;
+
       printva(curproc);
     }
     // end
@@ -499,6 +518,8 @@ void swapPageIn(struct proc* curproc, char* va) {
     if(curproc->va_swap[va2_i] == va)
       break;
 
+  uint age_2 = curproc->age_swap[va2_i];
+
   if(va2_i == curproc->nFilePages) 
     panic("SwapPageIn: va not found\n");
 
@@ -506,6 +527,9 @@ void swapPageIn(struct proc* curproc, char* va) {
   int offset = 0;
   va1_i = getPage(curproc, FIFO);
   char* va_0 = curproc->va[va1_i];
+  uint age_0 = curproc->age_ram[va1_i];
+
+  cprintf("\tSwapPageIn: Algo chose to swap out va[%d] = %d\n", va1_i, va_0);
 
   char *mem = kalloc();
   if(mem == 0) 
@@ -537,7 +561,9 @@ void swapPageIn(struct proc* curproc, char* va) {
 
   shiftLeft(curproc, va1_i);                // move all elements of curproc->va to 1 step left
   curproc->va_swap[va2_i] = (char*) va_0;   // va_0 is now stored in swap file, substituting va
+  curproc->age_swap[va2_i] = age_0;
   curproc->va[MAX_PSYC_PAGES-1] = va;       // va is now stored at the tail of list
+  curproc->age_ram[MAX_PSYC_PAGES-1] = age_2;
   curproc->pageFault++;
 
   cprintf("------------ End Swap Page ------------\n");

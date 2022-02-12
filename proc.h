@@ -74,6 +74,9 @@ struct proc {
 
     char* va[MAX_PSYC_PAGES];       // virtual address of each pages in memory
     char* va_swap[MAX_PSYC_PAGES];  // virtual adderss of each pages in swap
+
+    uint age_ram[MAX_PSYC_PAGES];    // age counter of pages in ram
+    uint age_swap[MAX_PSYC_PAGES];   // age counter of pages in swap file
 };
 
 // Process memory is laid out contiguously, low addresses first:

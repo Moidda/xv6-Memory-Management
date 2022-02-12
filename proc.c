@@ -123,10 +123,12 @@ allocproc(void) {
     // added
     int i;
     p->nMemPages = 0;
-    for(i = 0; i < MAX_PSYC_PAGES; i++) 
-        p->va[i] = p->va_swap[i] = 0xffffffff;
-    
+    p->nFilePages = 0;
     p->pageFault = 0;
+    for(i = 0; i < MAX_PSYC_PAGES; i++) {
+        p->va[i] = p->va_swap[i] = 0xffffffff;
+        p->age_ram[i] = p->age_swap[i] = 0;
+    }
 
     return p;
 }
@@ -254,6 +256,11 @@ fork(void) {
     if(curproc->pid > 2)
         for(i = 0; i < MAX_PSYC_PAGES; i++)
             np->va[i] = curproc->va[i];
+
+    for(i = 0; i < MAX_PSYC_PAGES; i++) {
+        np->age_ram[i] = curproc->age_ram[i];
+        np->age_swap[i] = curproc->age_swap[i];
+    }
 
     char buf[PGSIZE / 2] = "";
     int offset = 0;

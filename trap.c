@@ -46,6 +46,7 @@ trap(struct trapframe *tf)
     return;
   }
 
+  int i;
   struct proc* curproc;
 
   switch(tf->trapno){
@@ -53,6 +54,20 @@ trap(struct trapframe *tf)
     if(cpuid() == 0){
       acquire(&tickslock);
       ticks++;
+      
+      curproc = myproc();
+      if(curproc) {
+        // recalculate the ages for every pages in ram for this process
+        for(i = 0; i < curproc->nMemPages; i++) {
+          curproc->age_ram[i] >>= 1;
+          pte_t *pte = getWalkpgdir(curproc->pgdir, (void*)curproc->va[i]);
+          if((*pte) & PTE_A) {
+            curproc->age_ram[i] |= 0x80000000;       // set the most significant bit
+            (*pte) &= (~PTE_A);                     // clear the referenced bit
+          }
+        }
+      }
+      
       wakeup(&ticks);
       release(&tickslock);
     }
@@ -85,7 +100,6 @@ trap(struct trapframe *tf)
   case T_PGFLT:
     cprintf("-----------------In Page fault-----------------\n");
     curproc = myproc();
-    int i;
     uint va = rcr2();
     pde_t *pde = &(myproc()->pgdir[PDX(va)]);
     if(((int)(*pde) & PTE_P)!=0){
@@ -98,7 +112,6 @@ trap(struct trapframe *tf)
         swapPageIn(curproc, PTE_ADDR(va));
         
         printva(curproc);
-
 
         cprintf("-----------------End Page fault-----------------\n");
         return;
